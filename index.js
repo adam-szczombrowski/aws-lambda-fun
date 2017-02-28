@@ -1,120 +1,110 @@
 'use strict';
 
-const jimp = require("jimp");
+const jimp = require('jimp');
 const AWS = require('aws-sdk');
-const rekognition = new AWS.Rekognition();
 const uuidV1 = require('uuid/v1');
 
-const recognize = (buffer, callback, table, uuid) => {
-    var docClient = new AWS.DynamoDB.DocumentClient();
+const rekognition = new AWS.Rekognition();
+const s3 = new AWS.S3();
+const docClient = new AWS.DynamoDB.DocumentClient();
 
-    var params = {
+const recognize = (buffer, table, uuid, callback) => {
+    const params = {
         Image: {
-            Bytes: buffer
+            Bytes: buffer,
         },
         MaxLabels: 10,
-        MinConfidence: 60
+        MinConfidence: 60,
     };
 
-    rekognition.detectLabels(params).promise().then(function (data) {
-        var dynamoParams = {
+    rekognition.detectLabels(params).promise().then((data) => {
+        const dynamoParams = {
             TableName: table,
-            Item:{
-                "id": uuid,
-                "meta": data.Labels
-            }
+            Item: {
+                id: uuid,
+                meta: data.Labels,
+            },
         };
 
-        docClient.put(dynamoParams, function(err, data) {
-        if (err) {
-            console.error("Unable to add item. Error JSON:", JSON.stringify(err, null, 2));
-        } else {
-            console.log("Added item:", JSON.stringify(data, null, 2));
+        docClient.put(dynamoParams).promise().then((data) => {
+            console.log('Added item: ', JSON.stringify(data, null, 2));
             greyscaleImage(buffer, table, uuid);
-        }
+        }).catch((err) => {
+            console.error('Unable to add item. Error JSON: ', JSON.stringify(err, null, 2));
+            callback(err);
         });
-
-    }).catch(function (err) {
+    }).catch((err) => {
         callback(err);
     });
 };
 
 const greyscaleImage = (buffer, table, uuid) => {
-  jimp.read(buffer).then(function (img) {
-    var grey = img.greyscale();
-    grey.getBuffer( jimp.MIME_PNG, function(err, image) {
-      s3upload(image, table, uuid);
+    jimp.read(buffer).then((img) => {
+        const grey = img.greyscale();
+        grey.getBuffer(jimp.MIME_PNG, (err, image) => {
+            s3upload(image, table, uuid);
+        });
+    }).catch((err) => {
+        console.error(err);
     });
-  }).catch(function (err) {
-      console.error(err);
-  });
 };
 
 
 const s3upload = (buffer, table, uuid) => {
-    var s3 = new AWS.S3();
-
     const s3Params = {
-      Bucket: 'example-bucket-1',
-      Key: uuid.concat('.png'),
-      Body: buffer,
-      ACL: 'public-read',
-      ContentType: 'image/png'
+        Bucket: 'example-bucket-1',
+        Key: uuid.concat('.png'),
+        Body: buffer,
+        ACL: 'public-read',
+        ContentType: 'image/png',
     };
 
-    s3.putObject(s3Params, function(err, data) {
-      if (err) console.log(err, err.stack);
-      else
-      {
-          updateDB(table, uuid);
-      }
+    s3.putObject(s3Params).promise().then((data) => {
+        updateDB(table, uuid);
+    }).catch((error) => {
+        console.log(err, err.stack);
     });
 };
 
 const updateDB = (table, uuid) => {
-    var s3 = new AWS.S3();
+    const key = uuid.concat('.png')
 
-    var docClient = new AWS.DynamoDB.DocumentClient();
-    var key = uuid.concat('.png')
+    const urlParams = {
+        Bucket: 'example-bucket-1',
+        Key: key,
+    };
 
-    var urlParams = { Bucket: 'example-bucket-1', Key: key };
-    s3.getSignedUrl('getObject', urlParams, function(err, url){
-        var dynamoParams = {
+    s3.getSignedUrl('getObject', urlParams, function(err, url) {
+        const dynamoParams = {
             TableName: table,
-            Key:{
-                "id": uuid
+            Key: {
+                id: uuid,
             },
-            UpdateExpression: "set url = :url",
-            ExpressionAttributeValues:{
-                ":url": url,
+            UpdateExpression: 'set url = :url',
+            ExpressionAttributeValues: {
+                ':url': url,
             },
-            ReturnValues:"UPDATED_NEW"
+            ReturnValues: 'UPDATED_NEW',
         };
 
-        docClient.update(dynamoParams, function(err, data) {
-            if (err) {
-                console.error("Unable to add item. Error JSON:", JSON.stringify(err, null, 2));
-            } else {
-                console.log("Added item:", JSON.stringify(data, null, 2));
-            }
+        docClient.update(dynamoParams).promise().then((data) => {
+            console.log('Added item: ', JSON.stringify(data, null, 2));
+        }).catch((error) => {
+            console.error('Unable to add item. Error JSON: ', JSON.stringify(err, null, 2));
         });
     });
 };
 
-const process_image = (req, callback) => {
-    var buffer = new Buffer(req.base64Image, 'base64');
+const processImage = (req, callback) => {
+    const buffer = new Buffer(req.base64Image, 'base64');
+    const table = 'Images';
+    const uuid = uuidV1();
 
-    var docClient = new AWS.DynamoDB.DocumentClient();
-    var dynamodb = new AWS.DynamoDB();
-    var table = "Images";
-    var uuid = uuidV1();
-    var s3 = new AWS.S3();
-
-    recognize(buffer, callback, table, uuid);
+    recognize(buffer, table, uuid, callback);
 };
 
 exports.handler = (event, context, callback) => {
     const req = event;
 
-    process_image(req, callback);
+    processImage(req, callback);
 };
